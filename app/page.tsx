@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { motion } from 'motion/react';
 import { 
@@ -15,6 +16,16 @@ import {
 } from 'lucide-react';
 
 export default function LandingPage() {
+  const [searchQuery, setSearchQuery] = useState('');
+  const router = useRouter();
+
+  const handleSearch = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (searchQuery.trim()) {
+      router.push(`/dashboard?q=${encodeURIComponent(searchQuery)}`);
+    }
+  };
+
   return (
     <div className="min-h-screen flex flex-col">
       {/* Navigation */}
@@ -99,17 +110,24 @@ export default function LandingPage() {
               <p className="text-slate-400 text-lg mb-8">
                 Don&apos;t just search for links. Search for answers. Our AI synthesizes information from across the web to give you a complete picture.
               </p>
-              <div className="relative">
+              <form onSubmit={handleSearch} className="relative">
                 <div className="absolute inset-y-0 left-4 flex items-center pointer-events-none">
                   <Search className="text-slate-500" size={20} />
                 </div>
                 <input 
                   type="text" 
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
                   placeholder="Search for anything..." 
                   className="w-full bg-white/10 border border-white/20 rounded-2xl py-4 pl-12 pr-4 text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 transition-all"
-                  disabled
                 />
-              </div>
+                <button 
+                  type="submit"
+                  className="absolute right-2 top-2 bottom-2 px-4 bg-white text-slate-900 rounded-xl font-bold text-sm hover:bg-slate-100 transition-colors"
+                >
+                  Search
+                </button>
+              </form>
             </div>
             {/* Abstract background element */}
             <div className="absolute top-0 right-0 w-1/2 h-full bg-gradient-to-br from-indigo-500/20 to-emerald-500/20 blur-3xl -mr-20 -mt-20 pointer-events-none" />

@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, Suspense, useCallback } from 'react';
+import { useSearchParams, useRouter } from 'next/navigation';
 import { motion, AnimatePresence } from 'motion/react';
 import Markdown from 'react-markdown';
 import { GoogleGenAI } from "@google/genai";
@@ -21,7 +22,8 @@ import {
   FileText,
   History,
   ExternalLink,
-  AlertCircle
+  AlertCircle,
+  ArrowLeft
 } from 'lucide-react';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -49,6 +51,14 @@ interface Chat {
 }
 
 export default function Dashboard() {
+  return (
+    <Suspense fallback={<div className="flex h-screen items-center justify-center"><Loader2 className="animate-spin" /></div>}>
+      <DashboardContent />
+    </Suspense>
+  );
+}
+
+function DashboardContent() {
   const [activeType, setActiveType] = useState<ContentType>('search');
   const [input, setInput] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
@@ -61,8 +71,11 @@ export default function Dashboard() {
   const [editValue, setEditValue] = useState('');
   const [editingChatId, setEditingChatId] = useState<string | null>(null);
   const [chatTitleEditValue, setChatTitleEditValue] = useState('');
+  const hasProcessedQuery = useRef(false);
 
   const scrollRef = useRef<HTMLDivElement>(null);
+  const searchParams = useSearchParams();
+  const router = useRouter();
   const genAI = new GoogleGenAI({ apiKey: process.env.NEXT_PUBLIC_GEMINI_API_KEY || '' });
 
   const activeChat = chats.find(c => c.id === activeChatId);
@@ -74,10 +87,10 @@ export default function Dashboard() {
     }
   }, []);
 
-  const saveChats = (newChats: Chat[]) => {
+  const saveChats = useCallback((newChats: Chat[]) => {
     localStorage.setItem('omninote_chats', JSON.stringify(newChats));
     setChats(newChats);
-  };
+  }, []);
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -98,7 +111,53 @@ export default function Dashboard() {
     setActiveType(type);
   };
 
-  const handleSend = async (overrideInput?: string, isEdit: boolean = false) => {
+  const generateResponse = useCallback(async (chatId: string, promptText: string, currentChats: Chat[]) => {
+    const chat = currentChats.find(c => c.id === chatId);
+    if (!chat) return;
+
+    let systemInstruction = "You are a professional AI assistant.";
+    if (chat.type === 'note') systemInstruction = "Expert note-taker. Structured Markdown.";
+    if (chat.type === 'blog') systemInstruction = "Professional blog writer. Catchy titles, SEO-friendly. Markdown.";
+    if (chat.type === 'review') systemInstruction = "Critical product reviewer. Pros/Cons/Verdict. Markdown.";
+    if (chat.type === 'search') systemInstruction = "You are a highly capable knowledge assistant. Provide comprehensive information. Use Markdown for formatting.";
+
+    const response = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        messages: chat.messages,
+        systemInstruction,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.error || 'Failed to generate response from Groq.');
+    }
+
+    const data = await response.json();
+    const text = data.text;
+    
+    if (!text) throw new Error('Failed to generate response.');
+
+    const assistantMsg: Message = {
+      id: Math.random().toString(36).substr(2, 9),
+      role: 'assistant',
+      content: text,
+      timestamp: Date.now(),
+    };
+
+    const finalChats = currentChats.map(c => {
+      if (c.id === chatId) {
+        return { ...c, messages: [...c.messages, assistantMsg] };
+      }
+      return c;
+    });
+
+    saveChats(finalChats);
+  }, [saveChats]);
+
+  const handleSend = useCallback(async (overrideInput?: string, isEdit: boolean = false) => {
     const messageText = overrideInput || input;
     if (!messageText.trim()) return;
 
@@ -153,52 +212,20 @@ export default function Dashboard() {
     } finally {
       setIsGenerating(false);
     }
-  };
+  }, [input, activeChatId, chats, activeType, editingMessageId, saveChats, generateResponse]);
 
-  const generateResponse = async (chatId: string, promptText: string, currentChats: Chat[]) => {
-    const chat = currentChats.find(c => c.id === chatId);
-    if (!chat) return;
-
-    let systemInstruction = "You are a professional AI assistant.";
-    if (chat.type === 'note') systemInstruction = "Expert note-taker. Structured Markdown.";
-    if (chat.type === 'blog') systemInstruction = "Professional blog writer. Catchy titles, SEO-friendly. Markdown.";
-    if (chat.type === 'review') systemInstruction = "Critical product reviewer. Pros/Cons/Verdict. Markdown.";
-    if (chat.type === 'search') systemInstruction = "You are a highly capable knowledge assistant. Your goal is to provide the most relevant and comprehensive information to the user's query. Use Google Search to find direct answers and in-depth details. Synthesize multiple sources into a cohesive, professional response. Prioritize accuracy, clarity, and directness. If a direct answer exists, provide it prominently. Use Markdown for formatting.";
-
-    const model = genAI.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: promptText,
-      config: {
-        systemInstruction,
-        tools: chat.type === 'search' ? [{ googleSearch: {} }] : undefined,
-      },
-    });
-
-    const response = await model;
-    const text = response.text;
-    
-    if (!text) throw new Error('Failed to generate response.');
-
-    const chunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks;
-    const extractedSources = chunks?.map((c: any) => c.web).filter(Boolean) || [];
-
-    const assistantMsg: Message = {
-      id: Math.random().toString(36).substr(2, 9),
-      role: 'assistant',
-      content: text,
-      timestamp: Date.now(),
-      sources: extractedSources
-    };
-
-    const finalChats = currentChats.map(c => {
-      if (c.id === chatId) {
-        return { ...c, messages: [...c.messages, assistantMsg] };
-      }
-      return c;
-    });
-
-    saveChats(finalChats);
-  };
+  // Handle search query from URL
+  useEffect(() => {
+    const query = searchParams.get('q');
+    if (query && !hasProcessedQuery.current) {
+      hasProcessedQuery.current = true;
+      setActiveType('search');
+      handleSend(query);
+      // Clear the query param without refreshing
+      const newUrl = window.location.pathname;
+      window.history.replaceState({}, '', newUrl);
+    }
+  }, [searchParams, handleSend]);
 
   const deleteChat = (id: string) => {
     const filtered = chats.filter(c => c.id !== id);
@@ -243,6 +270,13 @@ export default function Dashboard() {
         className="bg-[#f9f9f9] border-r border-black/5 flex flex-col h-full overflow-hidden shrink-0"
       >
         <div className="p-4 flex items-center justify-between">
+          <button 
+            onClick={() => router.push('/')}
+            className="p-2 hover:bg-black/5 rounded-lg transition-colors text-slate-500 hover:text-black"
+            title="Back to Home"
+          >
+            <ArrowLeft size={18} />
+          </button>
           <button 
             onClick={() => createNewChat(activeType)}
             className="flex-grow flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-black/5 transition-colors text-sm font-medium"
